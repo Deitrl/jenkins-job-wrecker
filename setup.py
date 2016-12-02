@@ -3,7 +3,8 @@ import sys
 from setuptools import setup, find_packages, Command
 from setuptools.command.test import test as TestCommand
 
-version = '1.0.6'
+version = '1.0.12'
+
 
 class PyTest(TestCommand):
     user_options = [('pytest-args=', 'a', "Arguments to pass to py.test")]
@@ -18,10 +19,10 @@ class PyTest(TestCommand):
         self.test_suite = True
 
     def run_tests(self):
-        #import here, cause outside the eggs aren't loaded
         import pytest
         errno = pytest.main('tests', self.pytest_args)
         sys.exit(errno)
+
 
 class ReleaseCommand(Command):
     """ Tag and push a new release. """
@@ -48,6 +49,11 @@ class ReleaseCommand(Command):
         print ' '.join(cmd)
         subprocess.check_call(cmd)
 
+        # Push branch to origin remote
+        cmd = ['git', 'push', 'origin', 'master']
+        print ' '.join(cmd)
+        subprocess.check_call(cmd)
+
         # Push package to pypi
         cmd = ['python', 'setup.py', 'sdist', 'upload']
         if self.sign:
@@ -62,7 +68,7 @@ setup(name="jenkins-job-wrecker",
                    'License :: OSI Approved :: MIT License',
                    'Operating System :: OS Independent',
                    'Programming Language :: Python',
-                   'Topic :: Software Development :: Libraries :: Python Modules',
+                   'Topic :: Software Development :: Libraries :: Python Modules',  # NOQA
                   ],
       keywords='jenkins xml yaml',
       author='ken dreyer',

@@ -1,3 +1,4 @@
+# encoding=utf8
 import argparse
 from argparse import ArgumentDefaultsHelpFormatter
 import errno
@@ -10,6 +11,10 @@ import jenkins_job_wrecker.job_handlers as job_handlers
 import xml.etree.ElementTree as ET
 import yaml
 
+is_py_v2 = True if sys.version[0] == '2' else False
+if is_py_v2:
+    reload(sys)
+    sys.setdefaultencoding('utf8')
 
 logging.basicConfig(level=logging.INFO)
 log = logging.getLogger('jjwrecker')
@@ -22,14 +27,17 @@ for handler in logging.getLogger().handlers:
                                                    '%(message)s'))
 
 
-class literal_unicode(unicode): pass
+def str_presenter(dumper, data):
+  if len(data.splitlines()) > 1:  # check for multiline string
+    # The dumper will not respect "style='|'" if it detects trailing
+    # whitespace on any line within the data. For scripts the trailing
+    # whitespace is not important.
+    lines = [l.strip() for l in data.splitlines()]
+    data = '\n'.join(lines)
+    return dumper.represent_scalar('tag:yaml.org,2002:str', data, style='|')
+  return dumper.represent_scalar('tag:yaml.org,2002:str', data)
 
-
-def literal_unicode_representer(dumper, data):
-    return dumper.represent_scalar(u'tag:yaml.org,2002:str', data, style='|')
-
-
-yaml.add_representer(literal_unicode, literal_unicode_representer)
+yaml.add_representer(str, str_presenter)
 
 
 # Given a file with XML, or a string of XML, parse it with
@@ -56,54 +64,45 @@ def root_to_yaml(root, name):
     project_types = {
         'project': 'freestyle',
         'matrix-project': 'matrix'}
-    if root.tag not in project_types:
-        raise NotImplementedError('Cannot handle "%s"-type projects' % root.tag)
-    job['project-type'] = project_types[root.tag]
+    if root.tag in project_types:
+        job['project-type'] = project_types[root.tag]
 
-    # Handle each top-level XML element with custom "handle_*" functions in
-    # job_handlers.py.
-    for child in root:
-        handler_name = 'handle_%s' % child.tag.lower()
-        try:
-            handler = getattr(job_handlers, handler_name)
-        except AttributeError:
-            # Show our YAML translation so far:
-            print yaml.dump(build, default_flow_style=False)
-            # ... and report what still needs to be done:
-            raise NotImplementedError("write a function for %s" % handler_name)
-        try:
-            settings = handler(child)
+        # Handle each top-level XML element with custom "handle_*" functions in
+        # job_handlers.py.
+        for child in root:
+            handler_name = 'handle_%s' % child.tag.lower()
+            try:
+                handler = getattr(job_handlers, handler_name)
+            except AttributeError:
+                # Show our YAML translation so far:
+                print yaml.dump(build, default_flow_style=False)
+                # ... and report what still needs to be done:
+                raise NotImplementedError("write a function for %s" % handler_name)
+            try:
+                settings = handler(child)
 
-            if not settings:
-                continue
+                if not settings:
+                    continue
 
-            for setting in settings:
-                key, value = setting
-                if key in job:
-                    job[key].append(value[0])
-                else:
-                    job[key] = value
-        except Exception:
-            print 'last called %s' % handler_name
-            raise
+                for setting in settings:
+                    key, value = setting
+                    if key in job:
+                        job[key].append(value[0])
+                    else:
+                        job[key] = value
+            except Exception:
+                print 'last called %s' % handler_name
+                raise
+    else:
+        # Project type not currently supported, so output as raw XML
+        if 'maven' in root.tag:
+            job['project-type'] = 'maven'
 
-    # any shell or script elements should be treated as literals
-    def format_shell_scripts(data):
-        for k, v in data.iteritems():
-            if type(v) is dict:
-                format_shell_scripts(v)
-            elif type(v) is list:
-                for lv in v:
-                    if type(lv) is dict:
-                        format_shell_scripts(lv)
-            else:
-                if k == 'shell' or k == 'script':
-                    data[k] = literal_unicode(v)
+        raw = {}
+        raw['xml'] = ET.tostring(root)
+        job['xml'] = {'raw':raw}
 
-    for build_element in build:
-        format_shell_scripts(build_element)
-
-    return yaml.dump(build, default_flow_style=False)
+    return yaml.dump(build, default_flow_style=False, default_style=None)
 
 
 # argparse foo
@@ -177,8 +176,17 @@ def main():
         # Convert to YAML
         root = get_xml_root(filename=args.filename)
         yaml = root_to_yaml(root, args.name)
-        # write yaml string to file (job-name.yml)
+        # Create output directory structure where needed
         yaml_filename = os.path.join('output', args.name + '.yml')
+        path = os.path.dirname(yaml_filename)
+        try:
+            os.makedirs(path)
+        except OSError as exc:  # Python >2.5
+            if exc.errno == errno.EEXIST and os.path.isdir(path):
+                pass
+            else:
+                raise
+        # Write to output file
         output_file = open(yaml_filename, 'w')
         output_file.write(yaml)
         output_file.close()
@@ -206,8 +214,8 @@ def main():
             job_names = []
             for job in server.get_jobs():
 
-                if job['name'] in args.ignore:
-                    log.info('Ignoring [%s] as requested...' % job)
+                if args.ignore and job['name'] in args.ignore:
+                    log.info('Ignoring \"%s\" as requested...' % job['name'])
                     continue
 
                 job_names.append(job['name'])
@@ -222,8 +230,17 @@ def main():
             root = get_xml_root(string=xml)
             log.info('converting job "%s" to YAML' % name)
             yaml = root_to_yaml(root, name)
-            # write yaml string to file (job-name.yml)
+            # Create output directory structure where needed
             yaml_filename = os.path.join('output', name + '.yml')
+            path = os.path.dirname(yaml_filename)
+            try:
+                os.makedirs(path)
+            except OSError as exc:  # Python >2.5
+                if exc.errno == errno.EEXIST and os.path.isdir(path):
+                    pass
+                else:
+                    raise
+            # Write to output file
             output_file = open(yaml_filename, 'w')
             output_file.write(yaml)
             output_file.close()
