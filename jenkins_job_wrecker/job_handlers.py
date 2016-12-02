@@ -1,8 +1,43 @@
+import collections
 import logging
 import re
 
 logging.basicConfig(level=logging.INFO)
 log = logging.getLogger(__name__)
+
+# Helpers
+NO_DEFAULT = object()
+
+# See http://stackoverflow.com/a/18348004/175349 for defaults trick
+Mapping = collections.namedtuple('Mapping', 'xml yaml default post_process')
+Mapping.__new__.__defaults__ = (NO_DEFAULT, lambda v: v)
+
+
+def map_xml_to_yaml(mappings, top):
+    result = {
+        m.yaml: m.default
+        for m in mappings
+        if m.default is not NO_DEFAULT
+    }
+
+    mappings_dict = {m.xml: m for m in mappings}
+
+    for child in top:
+        xml = child.tag
+        raw_value = child.text
+
+        try:
+            mapping = mappings_dict[xml]
+
+            yaml = mapping.xml
+            value = mapping.post_process(raw_value)
+
+            result[yaml] = value
+        except KeyError:
+            raise NotImplementedError("cannot handle XML %s" % xml)
+        except ValueError as e:
+            raise NotImplementedError("unsupported value %s for <%s>" % (e.args[0], xml))
+    return result
 
 
 # Handle "<actions/>"
@@ -45,7 +80,7 @@ def handle_properties(top):
             # latest version of JJB (1.3.0 at the moment) doesn't support this.
             continue
 
-        #Throttling
+        # Throttling
         elif child.tag == 'hudson.plugins.throttleconcurrents.ThrottleJobProperty':
             throttleproperty = handle_throttle_property(child)
             properties.append(throttleproperty)
@@ -54,6 +89,12 @@ def handle_properties(top):
         elif child.tag == 'jenkins.plugins.slack.SlackNotifier_-SlackJobProperty':
             slackproperty = handle_slack_property(child)
             properties.append(slackproperty)
+
+        # Build blocker
+        elif child.tag == 'hudson.plugins.buildblocker.BuildBlockerProperty':
+            build_blocker_property = handle_build_blocker_property(child)
+            if build_blocker_property:
+                properties.append(build_blocker_property)
 
         elif child.tag == 'jenkins.model.BuildDiscarderProperty':
             discarderproperty = handle_build_discarder_property(child)
@@ -150,6 +191,31 @@ def get_bool(txt):
     trues = ['true', 'True', 'Yes', 'yes', '1']
     return txt in trues
 
+
+def get_list(separator='\n', strip=True, skip_empty=True):
+    def getter(txt):
+        result = txt.split(separator)
+        if strip:
+            result = [s.strip() for s in result]
+        if skip_empty:
+            result = [s for s in result if s]
+        return result
+    return getter
+
+
+def get_enum(enum_values):
+    if isinstance(enum_values, (list, tuple, set)):
+        enum_values = {v: v for v in enum_values}
+
+    def getter(txt):
+        try:
+            return enum_values[txt]
+        except KeyError:
+            raise ValueError(txt)
+
+    return getter
+
+
 def handle_throttle_property(top):
     throttle_ret = {}
     for child in top:
@@ -202,6 +268,50 @@ def handle_slack_property(top):
         else:
             raise NotImplementedError("cannot handle XML %s" % child.tag)
     return {'slack':slack_ret}
+
+
+def handle_build_blocker_property(top):
+    mappings = [
+        Mapping('useBuildBlocker', 'use-build-blocker', False, get_bool),
+        Mapping('blockingJobs', 'blocking-jobs', [], get_list()),
+        Mapping('blockLevel', 'block-level', 'GLOBAL', get_enum(['GLOBAL', 'NODE'])),
+        Mapping('scanQueueFor', 'queue-scanning', 'DISABLED', get_enum(['DISABLED', 'ALL', 'BUILDABLE'])),
+    ]
+
+    config = map_xml_to_yaml(mappings, top)
+    if config['use-build-blocker']:
+        return {'build-blocker': config}
+    else:
+        return None
+
+    blocker_ret = {
+        'use-build-blocker': False,
+        'blocking-jobs': [],
+        'block-level': 'GLOBAL',
+        'queue-scanning': 'DISABLED',
+    }
+
+    block_levels = ('GLOBAL', 'NODE')
+    queue_scanning_modes = ('DISABLED', 'ALL', 'BUILDABLE')
+
+    for child in top:
+        if child.tag == 'useBuildBlocker':
+            blocker_ret['use-build-blocker'] = get_bool(child.text)  # (child.text == 'true')
+        elif child.tag == 'blockingJobs':
+            blocker_ret['blocking-jobs'] = child.text.split('\n')
+        elif child.tag == 'blockLevel':
+            block_level = child.text
+            if block_level not in block_levels:
+                raise NotImplementedError("unsupported blockLevel value %s" % block_level)
+            blocker_ret['block-level'] = block_level
+        elif child.tag == 'scanQueueFor':
+            queue_scanning_mode = child.text
+            if queue_scanning_mode not in queue_scanning_modes:
+                raise NotImplementedError("unsupported scanQueueFor value %s" % queue_scanning_mode)
+            blocker_ret['queue-scanning'] = queue_scanning_mode
+        else:
+            raise NotImplementedError("cannot handle XML %s" % child.tag)
+    return {'build-blocker': blocker_ret}
 
 
 # Handle "<scm>..."
@@ -279,6 +389,8 @@ def handle_scm_hg(top):
 
 def handle_scm_git(top):
     git = {}
+    git['wipe-workspace'] = False
+    git['skip-tag'] = True
 
     for child in top:
 
@@ -432,6 +544,10 @@ def handle_scm_git(top):
                     git['local-branch'] = extension[0].text
                 elif extension.tag == 'hudson.plugins.git.extensions.impl.PerBuildTag':
                     pass
+                elif extension.tag == 'hudson.plugins.git.extensions.impl.CleanBeforeCheckout':
+                    git.setdefault('clean', {})['before'] = True
+                elif extension.tag == 'hudson.plugins.git.extensions.impl.CleanCheckout':
+                    git.setdefault('clean', {})['after'] = True
                 else:
                     raise NotImplementedError("%s not supported" % extension.tag)
 
@@ -642,6 +758,34 @@ def handle_builders(top):
         elif child.tag == 'hudson.tasks.BatchFile':
             batch = handle_commands(child)
             builders.append({'batch':batch})
+
+        elif child.tag == 'org.jvnet.hudson.plugins.SbtPluginBuilder':
+            mappings = [
+                Mapping('name', 'name'),
+                Mapping('jvmFlags', 'jvm-flags'),
+                Mapping('sbtFlags', 'sbt-flags'),
+                Mapping('actions', 'actions'),
+                Mapping('subdirPath', 'subdir-path'),
+            ]
+            builders.append({'sbt': map_xml_to_yaml(mappings, child)})
+
+            # sbt = {}
+            # # xml tag name -> yaml key
+            # mapping = {
+            #     'name': 'name',
+            #     'jvmFlags': 'jvm-flags',
+            #     'sbtFlags': 'sbt-flags',
+            #     'actions': 'actions',
+            #     'subdirPath': 'subdir-path',
+            # }
+            # for sbt_element in child:
+            #     try:
+            #         sbt[mapping[sbt_element.tag]] = sbt_element.text
+            #     except KeyError:
+            #         raise NotImplementedError("cannot handle "
+            #                                   "XML %s" % sbt_element.tag)
+            #
+            # builders.append({'sbt': sbt})
 
         elif child.tag == 'hudson.tasks.Maven':
             maven = {}
@@ -887,6 +1031,9 @@ def handle_publishers(top):
         elif child.tag == 'hudson.plugins.robot.RobotPublisher':
             raise NotImplementedError("cannot handle XML %s" % child.tag)
         elif child.tag == 'jenkins.plugins.publish__over__ssh.BapSshPublisherPlugin':
+            raise NotImplementedError("cannot handle XML %s" % child.tag)
+        elif child.tag == 'hudson.plugins.warnings.WarningsPublisher':
+
             raise NotImplementedError("cannot handle XML %s" % child.tag)
         elif child.tag == 'jenkins.plugins.slack.SlackNotifier':
             slacknotifier = {}
