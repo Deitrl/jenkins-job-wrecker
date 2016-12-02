@@ -791,50 +791,50 @@ def handle_builders(top):
                 batch = handle_commands(child)
                 builders.append({'batch':batch})
 
-        elif child.tag == 'org.jvnet.hudson.plugins.SbtPluginBuilder':
-            mappings = [
-                Mapping('name', 'name'),
-                Mapping('jvmFlags', 'jvm-flags'),
-                Mapping('sbtFlags', 'sbt-flags'),
-                Mapping('actions', 'actions'),
-                Mapping('subdirPath', 'subdir-path'),
-            ]
-            builders.append({'sbt': map_xml_to_yaml(mappings, child)})
+            elif child.tag == 'org.jvnet.hudson.plugins.SbtPluginBuilder':
+                mappings = [
+                    Mapping('name', 'name'),
+                    Mapping('jvmFlags', 'jvm-flags'),
+                    Mapping('sbtFlags', 'sbt-flags'),
+                    Mapping('actions', 'actions'),
+                    Mapping('subdirPath', 'subdir-path'),
+                ]
+                builders.append({'sbt': map_xml_to_yaml(mappings, child)})
 
-            # sbt = {}
-            # # xml tag name -> yaml key
-            # mapping = {
-            #     'name': 'name',
-            #     'jvmFlags': 'jvm-flags',
-            #     'sbtFlags': 'sbt-flags',
-            #     'actions': 'actions',
-            #     'subdirPath': 'subdir-path',
-            # }
-            # for sbt_element in child:
-            #     try:
-            #         sbt[mapping[sbt_element.tag]] = sbt_element.text
-            #     except KeyError:
-            #         raise NotImplementedError("cannot handle "
-            #                                   "XML %s" % sbt_element.tag)
-            #
-            # builders.append({'sbt': sbt})
+                # sbt = {}
+                # # xml tag name -> yaml key
+                # mapping = {
+                #     'name': 'name',
+                #     'jvmFlags': 'jvm-flags',
+                #     'sbtFlags': 'sbt-flags',
+                #     'actions': 'actions',
+                #     'subdirPath': 'subdir-path',
+                # }
+                # for sbt_element in child:
+                #     try:
+                #         sbt[mapping[sbt_element.tag]] = sbt_element.text
+                #     except KeyError:
+                #         raise NotImplementedError("cannot handle "
+                #                                   "XML %s" % sbt_element.tag)
+                #
+                # builders.append({'sbt': sbt})
 
-        elif child.tag == 'hudson.tasks.Maven':
-            maven = {}
-            for maven_element in child:
-                if maven_element.tag == 'targets':
-                    maven['goals'] = maven_element.text
-                elif maven_element.tag == 'mavenName':
-                    maven['name'] = maven_element.text
-                elif maven_element.tag == 'usePrivateRepository':
-                    maven['private-repository'] = (maven_element.text == 'true')
-                elif maven_element.tag == 'settings':
-                    maven['settings'] = maven_element.attrib['class']
-                elif maven_element.tag == 'globalSettings':
-                    maven['global-settings'] = maven_element.attrib['class']
-                else:
-                    continue
-            builders.append({'maven-target':maven})
+            elif child.tag == 'hudson.tasks.Maven':
+                maven = {}
+                for maven_element in child:
+                    if maven_element.tag == 'targets':
+                        maven['goals'] = maven_element.text
+                    elif maven_element.tag == 'mavenName':
+                        maven['name'] = maven_element.text
+                    elif maven_element.tag == 'usePrivateRepository':
+                        maven['private-repository'] = (maven_element.text == 'true')
+                    elif maven_element.tag == 'settings':
+                        maven['settings'] = maven_element.attrib['class']
+                    elif maven_element.tag == 'globalSettings':
+                        maven['global-settings'] = maven_element.attrib['class']
+                    else:
+                        continue
+                builders.append({'maven-target':maven})
 
             else:
                 raise NotImplementedError("cannot handle XML %s" % child.tag)
